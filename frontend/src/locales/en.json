@@ -197,6 +197,8 @@
   "devices.setpoint_mode_proportional": "Proportional (valve control)",
   "devices.setpoint_mode_direct": "Direct (device regulates)",
   "devices.setpoint_mode_hint": "Direct sends the actual room target to the device — best for thermostats and space heaters that regulate themselves. Proportional sends a boosted setpoint toward the device max_temp — best for radiator valves (TRVs).",
+  "devices.valve_position_entity": "Valve position sensor (optional)",
+  "devices.valve_position_entity_hint": "Sensor reporting the TRV's valve opening in % (e.g. from Danfoss Ally). While heating, the thermal model learns from the actual opening instead of assuming a fully open valve — useful for TRVs that regulate themselves. Only used when every TRV in the room has one. After adding it, consider resetting the room's thermal model.",
   "devices.coil_dry": "Evaporator drying",
   "devices.coil_dry_inherit": "Use global setting",
   "devices.coil_dry_on": "Always on",

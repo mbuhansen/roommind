@@ -49,6 +49,11 @@ def _build_device_states(hass: HomeAssistant, devices: list[dict]) -> list[dict[
             "coil_dry_mode": dev.get("coil_dry_mode", ""),
             "coil_dry_fan_mode": dev.get("coil_dry_fan_mode", ""),
         }
+        valve_eid = dev.get("valve_position_entity") or ""
+        if valve_eid:
+            valve_state = hass.states.get(valve_eid)
+            entry["valve_position_entity"] = valve_eid
+            entry["valve_position"] = valve_state.state if valve_state else "not_found"
         if state:
             attrs = state.attributes
             entry["ha_state"] = state.state

@@ -111,6 +111,9 @@ VALVE_PROTECTION_CHECK_CYCLES = 120  # ~1 hour — how often to scan for stale v
 VALVE_PROTECTION_CYCLE_DURATION = 15  # seconds — minimum before closing (actual ≥ UPDATE_INTERVAL)
 DEFAULT_VALVE_PROTECTION_INTERVAL = 7  # days — default idle threshold before cycling
 
+# Valve position feedback for EKF training (TRV-reported valve opening, 0-100 %)
+VALVE_POSITION_MIN_PCT = 2.0  # below this the valve is treated as closed
+
 # Mold risk detection & prevention
 MOLD_RISK_OK = "ok"
 MOLD_RISK_WARNING = "warning"

@@ -69,6 +69,7 @@ def test_legacy_to_devices_basic():
         "idle_action": "off",
         "idle_fan_mode": "low",
         "setpoint_mode": "proportional",
+        "valve_position_entity": "",
         "coil_dry": "inherit",
         "coil_dry_minutes": 0,
         "coil_dry_mode": "",
@@ -76,6 +77,7 @@ def test_legacy_to_devices_basic():
     }
     assert devices[2]["type"] == "ac"
     assert devices[2]["heating_system_type"] == ""
+    assert "valve_position_entity" not in devices[2]
 
 
 def test_legacy_to_devices_heating_system_type_transferred_to_trvs():

@@ -337,6 +337,25 @@ def test_build_device_states_entity_not_found(hass):
 
     assert result[0]["ha_state"] == "not_found"
     assert "last_command" not in result[0]
+    assert "valve_position_entity" not in result[0]
+
+
+def test_build_device_states_valve_position(hass):
+    """A configured valve position entity is reported with its raw state."""
+    valve = MagicMock()
+    valve.state = "37"
+    hass.states.get = MagicMock(side_effect=lambda eid: valve if eid == "sensor.trv_valve" else None)
+    devices = [
+        {"entity_id": "climate.trv", "type": "trv", "valve_position_entity": "sensor.trv_valve"},
+        {"entity_id": "climate.trv2", "type": "trv", "valve_position_entity": "sensor.gone"},
+    ]
+
+    with patch("custom_components.roommind.diagnostics._last_commands", {}):
+        result = _build_device_states(hass, devices)
+
+    assert result[0]["valve_position_entity"] == "sensor.trv_valve"
+    assert result[0]["valve_position"] == "37"
+    assert result[1]["valve_position"] == "not_found"
 
 
 @pytest.mark.asyncio

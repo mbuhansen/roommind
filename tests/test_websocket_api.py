@@ -2904,6 +2904,25 @@ async def test_coil_dry_device_schema_defaults():
 
 
 @pytest.mark.asyncio
+async def test_valve_position_entity_device_schema():
+    """valve_position_entity defaults to "" and is kept when given."""
+    schema = websocket_save_room._ws_schema
+    result = schema(
+        {
+            "type": "roommind/rooms/save",
+            "id": 1,
+            "area_id": "living_room",
+            "devices": [
+                {"entity_id": "climate.trv1", "type": "trv"},
+                {"entity_id": "climate.trv2", "type": "trv", "valve_position_entity": "sensor.trv2_valve"},
+            ],
+        }
+    )
+    assert result["devices"][0]["valve_position_entity"] == ""
+    assert result["devices"][1]["valve_position_entity"] == "sensor.trv2_valve"
+
+
+@pytest.mark.asyncio
 async def test_coil_dry_rejects_on_for_trv():
     """A TRV has no evaporator coil."""
     import voluptuous as vol

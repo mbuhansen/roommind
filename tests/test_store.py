@@ -497,6 +497,7 @@ async def test_migration_legacy_room_gets_devices(store):
         "idle_action": "off",
         "idle_fan_mode": "low",
         "setpoint_mode": "proportional",
+        "valve_position_entity": "",
         "coil_dry": "inherit",
         "coil_dry_minutes": 0,
         "coil_dry_mode": "",

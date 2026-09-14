@@ -985,6 +985,26 @@ export class RsDeviceSection extends LitElement {
           : nothing
       }
       ${
+        isThermostat
+          ? html`
+              <div class="detail-field with-info">
+                <ha-entity-picker
+                  .hass=${this.hass}
+                  .includeDomains=${["sensor", "number"]}
+                  .value=${device.valve_position_entity ?? ""}
+                  .label=${localize("devices.valve_position_entity", lang)}
+                  allow-custom-entity
+                  @value-changed=${(e: CustomEvent) =>
+                    this._onValvePositionEntityChange(entityId, (e.detail?.value as string) ?? "")}
+                ></ha-entity-picker>
+                <rs-info-icon
+                  .text=${localize("devices.valve_position_entity_hint", lang)}
+                ></rs-info-icon>
+              </div>
+            `
+          : nothing
+      }
+      ${
         isThermostat && this.valveProtectionEnabled
           ? html`
               <div class="detail-toggle-row">
@@ -1092,6 +1112,13 @@ export class RsDeviceSection extends LitElement {
   private _onSetpointModeChange(entityId: string, mode: string): void {
     const newDevices = this.devices.map((d) =>
       d.entity_id === entityId ? { ...d, setpoint_mode: mode as "proportional" | "direct" } : d,
+    );
+    this._fireDeviceChanged(newDevices);
+  }
+
+  private _onValvePositionEntityChange(entityId: string, valveEntity: string): void {
+    const newDevices = this.devices.map((d) =>
+      d.entity_id === entityId ? { ...d, valve_position_entity: valveEntity } : d,
     );
     this._fireDeviceChanged(newDevices);
   }
