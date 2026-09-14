@@ -146,6 +146,20 @@ class TestComputeDeviceSetpoint:
         )
         assert result == 23.0
 
+    def test_all_direct_preheat_shows_upcoming_target(self, hass, mock_config_entry):
+        """During pre-heat the displayed direct setpoint is what the TRV receives."""
+        coordinator = _create_coordinator(hass, mock_config_entry)
+        result = coordinator._compute_device_setpoint(
+            "heating",
+            1.0,
+            22.0,
+            20.5,
+            True,
+            all_direct=True,
+            direct_target_temp=22.5,
+        )
+        assert result == 22.5
+
     def test_all_direct_no_sensor_still_none(self, hass, mock_config_entry):
         """all_direct with no external sensor still returns None."""
         coordinator = _create_coordinator(hass, mock_config_entry)
@@ -181,6 +195,18 @@ class TestComputeDeviceSetpointOrchestrated:
             direct_eids={"climate.heater"},
         )
         assert result == 21.0
+
+        # Pre-heat: the direct device shows the upcoming target it receives
+        result = coordinator._compute_device_setpoint_orchestrated(
+            plan,
+            20.0,
+            21.0,
+            30.0,
+            28.0,
+            direct_eids={"climate.heater"},
+            direct_target_temp=22.5,
+        )
+        assert result == 22.5
 
     def test_proportional_device_computes_boost(self, hass, mock_config_entry):
         coordinator = _create_coordinator(hass, mock_config_entry)

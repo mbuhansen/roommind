@@ -764,6 +764,10 @@ class MPCController:
         self.q_occupancy = q_occupancy
         self._idle_targets: TargetTemps | None = None
         self._force_off = False
+        # Upcoming schedule target the MPC is pre-heating / pre-cooling towards
+        # (set by _evaluate_mpc). See direct_setpoint_target().
+        self._upcoming_heat_target: float | None = None
+        self._upcoming_cool_target: float | None = None
 
         s = settings or {}
         self.outdoor_cooling_min = s.get("outdoor_cooling_min", DEFAULT_OUTDOOR_COOLING_MIN)
@@ -875,6 +879,8 @@ class MPCController:
         targets: TargetTemps,
     ) -> tuple[str, float]:
         """MPC evaluation — use optimizer to determine action and power fraction."""
+        self._upcoming_heat_target = None
+        self._upcoming_cool_target = None
         if current_temp is None or (targets.heat is None and targets.cool is None):
             return MODE_IDLE, 0.0
 
@@ -900,6 +906,9 @@ class MPCController:
         # Build dual target series with schedule lookahead for pre-heating/pre-cooling.
         # None values (from "off" action) are replaced with current_temp so the
         # optimizer sees "no deviation needed = idle optimal".
+        # The raw (None-preserving) series feed the direct-setpoint pre-heat target.
+        raw_heat_series: list[float | None] = []
+        raw_cool_series: list[float | None] = []
         if self._target_resolver is not None:
             now = time.time()
             dt_seconds = PLAN_DT_MINUTES * 60
@@ -907,13 +916,14 @@ class MPCController:
             # Extract separate heat and cool series from TargetTemps
             if raw_targets and isinstance(raw_targets[0], TargetTemps):
                 tt_targets = cast(list[TargetTemps], raw_targets)
-                heat_target_series = [t.heat if t.heat is not None else current_temp for t in tt_targets]
-                cool_target_series = [t.cool if t.cool is not None else current_temp for t in tt_targets]
+                raw_heat_series = [t.heat for t in tt_targets]
+                raw_cool_series = [t.cool for t in tt_targets]
             else:
                 # Legacy resolver returning float|None
-                float_targets = cast(list[float | None], raw_targets)
-                heat_target_series = [t if t is not None else current_temp for t in float_targets]
-                cool_target_series = list(heat_target_series)
+                raw_heat_series = list(cast(list[float | None], raw_targets))
+                raw_cool_series = list(raw_heat_series)
+            heat_target_series = [t if t is not None else current_temp for t in raw_heat_series]
+            cool_target_series = [t if t is not None else current_temp for t in raw_cool_series]
         else:
             fallback_h = targets.heat if targets.heat is not None else current_temp
             fallback_c = targets.cool if targets.cool is not None else current_temp
@@ -1023,7 +1033,32 @@ class MPCController:
                 action = MODE_IDLE
                 power_fraction = 0.0
 
+        # Remember the schedule target a pre-heat / pre-cool is working towards,
+        # over the same window the decision (and the guard above) was based on.
+        if action == MODE_HEATING and targets.heat is not None:
+            upcoming = [t for t in raw_heat_series[:guard_blocks] if t is not None]
+            if upcoming and max(upcoming) > targets.heat:
+                self._upcoming_heat_target = max(upcoming)
+        elif action == MODE_COOLING and targets.cool is not None:
+            upcoming = [t for t in raw_cool_series[:guard_blocks] if t is not None]
+            if upcoming and min(upcoming) < targets.cool:
+                self._upcoming_cool_target = min(upcoming)
+
         return action, power_fraction
+
+    def direct_setpoint_target(self, mode: str, target: float) -> float:
+        """Return the setpoint for setpoint_mode='direct' devices in *mode*.
+
+        While the MPC pre-heats (pre-cools) for a higher (lower) upcoming
+        schedule target, a direct device must aim for that target: sending the
+        current target (e.g. eco) lets the device's own regulation stay idle,
+        so the pre-heat never actually delivers heat.
+        """
+        if mode == MODE_HEATING and self._upcoming_heat_target is not None:
+            return max(target, self._upcoming_heat_target)
+        if mode == MODE_COOLING and self._upcoming_cool_target is not None:
+            return min(target, self._upcoming_cool_target)
+        return target
 
     def _evaluate_bangbang(
         self,
@@ -1290,6 +1325,8 @@ class MPCController:
         # After the guard above, target_temp is guaranteed non-None for HEATING/COOLING.
         # We assign a typed local for downstream use.
         effective_target: float = target_temp if target_temp is not None else 0.0
+        # setpoint_mode="direct" devices aim at the upcoming target while pre-heating
+        direct_target = self.direct_setpoint_target(mode, effective_target)
 
         # Dynamic boost: use device-reported limits, fall back to constants
         trv_heat_boost = heating_boost_target if heating_boost_target is not None else HEATING_BOOST_TARGET
@@ -1474,7 +1511,7 @@ class MPCController:
                             t = min(trv_heat_boost, t)
                         else:
                             t = trv_heat_boost if self.has_external_sensor else effective_target
-                        t_final = effective_target if cmd.entity_id in self._direct_eids else t
+                        t_final = direct_target if cmd.entity_id in self._direct_eids else t
                         ha_t = celsius_to_ha_temp(self.hass, t_final)
                         await self._call("set_hvac_mode", {"entity_id": cmd.entity_id, "hvac_mode": "heat"})
                         await self._call(
@@ -1493,7 +1530,7 @@ class MPCController:
                             t = min(ac_heat_boost, effective_target + self._ac_boost_delta, t)
                         else:
                             t = effective_target
-                        t_final = effective_target if cmd.entity_id in self._direct_eids else t
+                        t_final = direct_target if cmd.entity_id in self._direct_eids else t
                         ha_t = celsius_to_ha_temp(self.hass, t_final)
                         ac_state = self.hass.states.get(cmd.entity_id)
                         ac_modes = _effective_ac_modes(ac_state)
@@ -1550,7 +1587,7 @@ class MPCController:
             else:
                 trv_target = trv_heat_boost if self.has_external_sensor else effective_target
             ha_trv = celsius_to_ha_temp(self.hass, trv_target)
-            ha_trv_direct = celsius_to_ha_temp(self.hass, effective_target)
+            ha_trv_direct = celsius_to_ha_temp(self.hass, direct_target)
             for eid in thermostats:
                 if eid in _forced_off:
                     await async_idle_device(self.hass, eid, self._devices, area_id=self._area_id, targets=targets)
@@ -1574,7 +1611,7 @@ class MPCController:
             else:
                 ac_heat_target = effective_target
             ha_ac_target = celsius_to_ha_temp(self.hass, ac_heat_target)
-            ha_ac_direct = celsius_to_ha_temp(self.hass, effective_target)
+            ha_ac_direct = celsius_to_ha_temp(self.hass, direct_target)
             for eid in acs:
                 if eid in _forced_off:
                     await async_idle_device(self.hass, eid, self._devices, area_id=self._area_id, targets=targets)
@@ -1611,7 +1648,7 @@ class MPCController:
             else:
                 ac_cool_target = effective_target
             ha_target = celsius_to_ha_temp(self.hass, ac_cool_target)
-            ha_cool_direct = celsius_to_ha_temp(self.hass, effective_target)
+            ha_cool_direct = celsius_to_ha_temp(self.hass, direct_target)
             for eid in acs:
                 if eid in _forced_off:
                     await async_idle_device(self.hass, eid, self._devices, area_id=self._area_id, targets=targets)

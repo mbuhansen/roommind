@@ -879,6 +879,114 @@ def test_evaluate_mpc_with_target_resolver():
 
 
 # ---------------------------------------------------------------------------
+# direct_setpoint_target (pre-heat / pre-cool target for direct devices)
+# ---------------------------------------------------------------------------
+
+
+def _step_resolver(before: TargetTemps, after: TargetTemps, step_in_blocks: int):
+    """Resolver that switches from *before* to *after* at block *step_in_blocks*."""
+    # Switch slightly ahead of the block boundary so a few seconds of test runtime
+    # between here and the resolver calls cannot shift the step by one block.
+    switch_ts = time.time() + step_in_blocks * 300 - 50
+    return lambda ts: after if ts >= switch_ts else before
+
+
+def _preheat_ctrl(monkeypatch, resolver, action: str) -> MPCController:
+    ctrl = MPCController(
+        build_hass(),
+        make_room(),
+        model_manager=RoomModelManager(),
+        outdoor_temp=10.0,
+        settings={},
+        has_external_sensor=True,
+        target_resolver=resolver,
+    )
+    fake_plan = MPCPlan(actions=[action] * 24, temperatures=[21.0] * 25, power_fractions=[1.0] * 24)
+    monkeypatch.setattr(
+        "custom_components.roommind.control.mpc_controller.MPCOptimizer.optimize",
+        lambda *a, **kw: fake_plan,
+    )
+    return ctrl
+
+
+def test_direct_setpoint_target_preheat_uses_upcoming_comfort(monkeypatch):
+    """Pre-heating for comfort 25 min ahead: direct devices aim for comfort, not eco."""
+    eco = TargetTemps(heat=20.5, cool=27.0)
+    comfort = TargetTemps(heat=22.5, cool=24.0)
+    ctrl = _preheat_ctrl(monkeypatch, _step_resolver(eco, comfort, 5), MODE_HEATING)
+
+    mode, _ = ctrl._evaluate_mpc(22.0, eco)
+
+    assert mode == MODE_HEATING
+    assert ctrl.direct_setpoint_target(MODE_HEATING, 20.5) == 22.5
+    # Only the commanded mode is affected
+    assert ctrl.direct_setpoint_target(MODE_IDLE, 20.5) == 20.5
+
+
+def test_direct_setpoint_target_ignores_comfort_beyond_decision_window(monkeypatch):
+    """A target change outside the optimizer/guard window does not raise the setpoint."""
+    eco = TargetTemps(heat=18.0, cool=27.0)
+    comfort = TargetTemps(heat=22.5, cool=24.0)
+    ctrl = _preheat_ctrl(monkeypatch, _step_resolver(eco, comfort, 12), MODE_HEATING)
+
+    mode, _ = ctrl._evaluate_mpc(17.0, eco)
+
+    assert mode == MODE_HEATING
+    assert ctrl.direct_setpoint_target(MODE_HEATING, 18.0) == 18.0
+
+
+def test_direct_setpoint_target_not_raised_when_not_heating(monkeypatch):
+    """No pre-heat target when the optimizer stays idle."""
+    eco = TargetTemps(heat=20.5, cool=27.0)
+    comfort = TargetTemps(heat=22.5, cool=24.0)
+    ctrl = _preheat_ctrl(monkeypatch, _step_resolver(eco, comfort, 3), MODE_IDLE)
+
+    ctrl._evaluate_mpc(22.0, eco)
+
+    assert ctrl.direct_setpoint_target(MODE_HEATING, 20.5) == 20.5
+
+
+def test_direct_setpoint_target_never_lowers_heat_target(monkeypatch):
+    """Comfort now, eco ahead: the current (higher) target is kept."""
+    comfort = TargetTemps(heat=22.5, cool=24.0)
+    eco = TargetTemps(heat=20.5, cool=27.0)
+    ctrl = _preheat_ctrl(monkeypatch, _step_resolver(comfort, eco, 3), MODE_HEATING)
+
+    mode, _ = ctrl._evaluate_mpc(21.0, comfort)
+
+    assert mode == MODE_HEATING
+    assert ctrl.direct_setpoint_target(MODE_HEATING, 22.5) == 22.5
+
+
+def test_direct_setpoint_target_precool_uses_upcoming_cool_target(monkeypatch):
+    """Pre-cooling mirrors pre-heating: direct ACs aim for the lower upcoming target."""
+    eco = TargetTemps(heat=18.0, cool=27.0)
+    comfort = TargetTemps(heat=21.0, cool=24.0)
+    ctrl = _preheat_ctrl(monkeypatch, _step_resolver(eco, comfort, 4), MODE_COOLING)
+    ctrl._get_can_heat_cool = lambda: (True, True)
+
+    mode, _ = ctrl._evaluate_mpc(25.0, eco)
+
+    assert mode == MODE_COOLING
+    assert ctrl.direct_setpoint_target(MODE_COOLING, 27.0) == 24.0
+
+
+def test_direct_setpoint_target_off_blocks_are_ignored(monkeypatch):
+    """Blocks resolving to "off" (None) never become a pre-heat target."""
+    now_target = TargetTemps(heat=20.0, cool=26.0)
+    ctrl = _preheat_ctrl(
+        monkeypatch,
+        _step_resolver(now_target, TargetTemps(heat=None, cool=None), 2),
+        MODE_HEATING,
+    )
+
+    mode, _ = ctrl._evaluate_mpc(19.5, now_target)
+
+    assert mode == MODE_HEATING
+    assert ctrl.direct_setpoint_target(MODE_HEATING, 20.0) == 20.0
+
+
+# ---------------------------------------------------------------------------
 # _build_solar_series with cloud_series
 # ---------------------------------------------------------------------------
 

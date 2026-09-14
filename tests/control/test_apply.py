@@ -4055,6 +4055,38 @@ async def test_direct_setpoint_trv_heating():
 
 
 @pytest.mark.asyncio
+async def test_direct_setpoint_trv_preheat_receives_upcoming_target():
+    """While pre-heating for comfort, a direct TRV gets the comfort target, not eco.
+
+    Sending eco (e.g. 20.5 in a 22.0 room) keeps the TRV's own regulation
+    closed, so the pre-heat would not deliver any heat.
+    """
+    hass = build_hass()
+    room = make_room(thermostats=["climate.direct", "climate.prop"])
+    room["devices"][0]["setpoint_mode"] = "direct"
+    ctrl = MPCController(
+        hass,
+        room,
+        model_manager=RoomModelManager(),
+        outdoor_temp=5.0,
+        settings={},
+        has_external_sensor=True,
+    )
+    ctrl._upcoming_heat_target = 22.5  # as set by _evaluate_mpc during pre-heat
+    _last_commands.clear()
+    await ctrl.async_apply("heating", TargetTemps(heat=20.5, cool=27.0), power_fraction=0.2, current_temp=22.0)
+
+    set_temps = {
+        c[0][2]["entity_id"]: c[0][2]["temperature"]
+        for c in hass.services.async_call.call_args_list
+        if c[0][1] == "set_temperature"
+    }
+    assert set_temps["climate.direct"] == 22.5
+    # Proportional TRV keeps its boost formula: 22.0 + 0.2 * (30.0 - 22.0)
+    assert set_temps["climate.prop"] == 23.6
+
+
+@pytest.mark.asyncio
 async def test_direct_setpoint_ac_cooling():
     """AC with setpoint_mode='direct' in cooling receives effective_target."""
     hass = build_hass()
