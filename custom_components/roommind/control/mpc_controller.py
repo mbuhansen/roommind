@@ -24,6 +24,7 @@ from ..const import (
     DEFAULT_OUTDOOR_COOLING_MIN,
     DEFAULT_OUTDOOR_HEATING_MAX,
     HEATING_BOOST_TARGET,
+    HEATING_SYSTEM_PROFILES,
     MODE_COOLING,
     MODE_HEATING,
     MODE_IDLE,
@@ -625,6 +626,14 @@ SAFETY_GUARD_MIN_BLOCKS = 6  # Minimum guard horizon (30 min floor)
 GUARD_PREDICTION_MARGIN = 0.2  # °C margin for prediction-based guard bypass
 HARD_OVERSHOOT_CEILING = 1.0  # °C — model-independent max overshoot before forced idle
 
+# Adaptive pre-heat: the optimizer's per-block lookahead is short (30 min for
+# radiators), so a scheduled comfort step further out stays invisible until
+# it is too late to reach it.  These bound how far ahead the model's own
+# time-to-target estimate may pull the start of heating.
+PREHEAT_MAX_MINUTES = 180  # never start earlier than this before the step
+PREHEAT_MARGIN = 1.15  # slack on the estimate (device throttling near target)
+PREHEAT_MIN_STEP_C = 0.1  # ignore target changes smaller than this
+
 # Minimum sample counts before MPC is allowed.
 # Each EKF update covers ~3 min (EKF_UPDATE_MIN_DT), so these correspond
 # to real-time requirements of ~3 h idle + ~1 h active-mode data.
@@ -1044,7 +1053,143 @@ class MPCController:
             if upcoming and min(upcoming) < targets.cool:
                 self._upcoming_cool_target = min(upcoming)
 
+        # Adaptive pre-heat: start early enough to actually reach a scheduled
+        # comfort step, instead of when it enters the optimizer's short lookahead.
+        preheat_target = self._adaptive_preheat_target(
+            current_temp,
+            targets,
+            raw_heat_series,
+            outdoor_series,
+            solar_series,
+            can_heat=can_heat,
+        )
+        if preheat_target is not None:
+            if action == MODE_IDLE:
+                _LOGGER.debug(
+                    "Adaptive pre-heat for %s: heating at %.1f°C towards upcoming %.1f°C",
+                    self._area_id,
+                    current_temp,
+                    preheat_target,
+                )
+                action = MODE_HEATING
+                power_fraction = 1.0
+            if action == MODE_HEATING:
+                known = self._upcoming_heat_target
+                self._upcoming_heat_target = max(preheat_target, known) if known is not None else preheat_target
+
         return action, power_fraction
+
+    def _adaptive_preheat_target(
+        self,
+        current_temp: float,
+        targets: TargetTemps,
+        raw_heat_series: list[float | None],
+        outdoor_series: list[float],
+        solar_series: list[float],
+        *,
+        can_heat: bool,
+    ) -> float | None:
+        """Return the upcoming heat target a pre-heat should start for now, else None.
+
+        Scans the schedule up to ``PREHEAT_MAX_MINUTES`` ahead for a step up in
+        the heat target and asks the thermal model how long full-power heating
+        needs to get there.  Heating starts once that estimate (plus
+        ``PREHEAT_MARGIN``) no longer fits in the remaining time.  A step the
+        model cannot reach at all is treated as needing the full window, so the
+        room still gets the earliest start the cap allows.
+        """
+        if not can_heat or targets.heat is None or self._target_resolver is None:
+            return None
+
+        max_blocks = int(PREHEAT_MAX_MINUTES / PLAN_DT_MINUTES)
+        series = self._preheat_target_series(raw_heat_series, max_blocks)
+
+        for i, upcoming in enumerate(series):
+            if upcoming is None or upcoming <= targets.heat + PREHEAT_MIN_STEP_C:
+                continue  # no step up (an 'off' block never pulls heating forward)
+            if current_temp >= upcoming:
+                continue  # already warm enough for this step
+            minutes_ahead = i * PLAN_DT_MINUTES
+            needed = self._minutes_to_reach(current_temp, upcoming, outdoor_series, solar_series, max_blocks)
+            if needed is None:
+                needed = float(PREHEAT_MAX_MINUTES)
+            # A slow system also has to charge its thermal mass before the air
+            # responds, which the single-capacity model does not separate out.
+            lead = max(needed * PREHEAT_MARGIN, self._heating_lead_floor_minutes())
+            if lead >= minutes_ahead:
+                return upcoming
+        return None
+
+    def _heating_lead_floor_minutes(self) -> float:
+        """Earliest sensible pre-heat lead for this heating system, in minutes.
+
+        Reuses the per-system profile the optimizer already relies on: a run
+        lasts at least ``min_run_minutes`` and the thermal mass needs about
+        ``tau_charge_minutes`` to charge before the room feels it.  Underfloor
+        therefore starts far earlier than a radiator, and an unknown system
+        keeps the model estimate alone.
+        """
+        profile = HEATING_SYSTEM_PROFILES.get(self._heating_system_type) if self._heating_system_type else None
+        if not profile:
+            return 0.0
+        return float(profile["min_run_minutes"]) + float(profile["tau_charge_minutes"])
+
+    def _preheat_target_series(self, raw_heat_series: list[float | None], blocks: int) -> list[float | None]:
+        """Heat targets per block, extending the MPC series when it is too short."""
+        if len(raw_heat_series) >= blocks:
+            return raw_heat_series[:blocks]
+        if self._target_resolver is None:
+            return list(raw_heat_series)
+
+        series = list(raw_heat_series)
+        now = time.time()
+        dt_seconds = PLAN_DT_MINUTES * 60
+        for i in range(len(series), blocks):
+            resolved = self._target_resolver(now + i * dt_seconds)
+            if isinstance(resolved, TargetTemps):
+                series.append(resolved.heat)
+            else:
+                series.append(cast(float | None, resolved))
+        return series
+
+    def _minutes_to_reach(
+        self,
+        current_temp: float,
+        target: float,
+        outdoor_series: list[float],
+        solar_series: list[float],
+        max_blocks: int,
+    ) -> float | None:
+        """Minutes of full-power heating needed to reach *target*, or None.
+
+        None means the model does not get there within ``max_blocks`` — either
+        the room is losing heat faster than the system supplies it, or the
+        learned heating rate is too weak.
+        """
+        model = self._model_manager.get_model(self._area_id)
+        fallback_out = self.outdoor_temp if self.outdoor_temp is not None else DEFAULT_OUTDOOR_TEMP_FALLBACK
+        temp = current_temp
+        for i in range(max_blocks):
+            t_out = (
+                outdoor_series[i]
+                if i < len(outdoor_series)
+                else (outdoor_series[-1] if outdoor_series else fallback_out)
+            )
+            q_solar = solar_series[i] if i < len(solar_series) else 0.0
+            nxt = model.predict(
+                temp,
+                t_out,
+                model.Q_heat,
+                PLAN_DT_MINUTES,
+                q_solar=q_solar,
+                q_occupancy=self.q_occupancy,
+            )
+            if nxt >= target:
+                return (i + 1) * PLAN_DT_MINUTES
+            if nxt <= temp:
+                return None  # heating makes no headway against the losses
+            temp = nxt
+        return None
 
     def direct_setpoint_target(self, mode: str, target: float) -> float:
         """Return the setpoint for setpoint_mode='direct' devices in *mode*.
