@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import timedelta
 from functools import partial
@@ -42,6 +43,7 @@ from .const import (
     SCHEDULE_STATE_ON,
     THERMAL_SAVE_CYCLES,
     UPDATE_INTERVAL,
+    VALVE_POSITION_MIN_PCT,
     TargetTemps,
     build_override_live,
     is_override_active,
@@ -1157,6 +1159,17 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             ekf_mode = observed_mode  # may be None → skip training
             ekf_pf = observed_pf
 
+        # Valve position feedback: a self-regulating TRV (e.g. setpoint_mode
+        # "direct") may only open its valve partially while RoomMind commands
+        # or observes heating.  Training with the reported opening instead of
+        # the commanded power keeps beta_h from collapsing towards the
+        # partial-open heat rate.  A fully closed valve yields pf=0, which the
+        # zero-power normalization below turns into an idle sample.
+        if ekf_mode == MODE_HEATING:
+            valve_pf = self._observe_valve_fraction(room)
+            if valve_pf is not None:
+                ekf_pf = valve_pf
+
         # --- Observation-based corrections on the training mode (#150, #241) ---
         # Ghost-heating guard: in Full Control the controller's commanded mode
         # can diverge from what the device actually does.  Near target with
@@ -1458,6 +1471,39 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 except (ValueError, TypeError):
                     continue
         return None
+
+    def _observe_valve_fraction(self, room: dict) -> float | None:
+        """Mean reported valve opening (0-1) of the room's TRVs, for EKF training.
+
+        Only conclusive when the room heats through TRVs alone and every TRV
+        has a ``valve_position_entity`` with a numeric reading; otherwise None
+        (caller keeps its power fraction).  Heat output is assumed linear in
+        valve opening — a simplification, but far closer than assuming a fully
+        open valve whenever heating is commanded.
+        """
+        devices = room.get("devices", [])
+        if get_ac_eids(devices):
+            return None
+        trv_eids = set(get_trv_eids(devices))
+        trvs = [d for d in devices if d.get("entity_id") in trv_eids]
+        if not trvs:
+            return None
+
+        fractions: list[float] = []
+        for dev in trvs:
+            valve_eid = dev.get("valve_position_entity") or ""
+            state = self.hass.states.get(valve_eid) if valve_eid else None
+            if state is None:
+                return None
+            try:
+                pct = float(state.state)
+            except (TypeError, ValueError):
+                return None  # unavailable / unknown / non-numeric
+            if not math.isfinite(pct):
+                return None
+            pct = max(0.0, min(100.0, pct))
+            fractions.append(0.0 if pct < VALVE_POSITION_MIN_PCT else pct / 100.0)
+        return sum(fractions) / len(fractions)
 
     def _observe_device_action(self, room: dict) -> tuple[str | None, float]:
         """Observe actual hvac_action from climate devices for model training.

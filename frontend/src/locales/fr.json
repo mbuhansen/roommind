@@ -201,6 +201,8 @@
   "devices.setpoint_mode_proportional": "Proportionnel (contrôle de vanne)",
   "devices.setpoint_mode_direct": "Direct (l'appareil régule)",
   "devices.setpoint_mode_hint": "Direct envoie la cible réelle de la pièce à l'appareil — idéal pour les thermostats et les chauffages d'appoint qui se régulent eux-mêmes. Proportionnel envoie une consigne renforcée vers la température maximale de l'appareil — idéal pour les vannes de radiateur (TRV).",
+  "devices.valve_position_entity": "Capteur de position de vanne (optionnel)",
+  "devices.valve_position_entity_hint": "Capteur indiquant l'ouverture de la vanne du thermostat en % (p. ex. Danfoss Ally). Pendant le chauffage, le modèle thermique apprend à partir de l'ouverture réelle au lieu de supposer une vanne entièrement ouverte — utile pour les thermostats qui se régulent eux-mêmes. Utilisé uniquement si chaque thermostat de la pièce en possède un. Après l'ajout, pensez à réinitialiser le modèle thermique de la pièce.",
   "devices.coil_dry": "Séchage de l'évaporateur",
   "devices.coil_dry_inherit": "Utiliser le réglage global",
   "devices.coil_dry_on": "Toujours activé",

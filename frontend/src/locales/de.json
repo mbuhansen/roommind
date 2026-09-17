@@ -201,6 +201,8 @@
   "devices.setpoint_mode_proportional": "Proportional (Ventilsteuerung)",
   "devices.setpoint_mode_direct": "Direkt (Gerät regelt selbst)",
   "devices.setpoint_mode_hint": "Direkt sendet die tatsächliche Raum-Zieltemperatur ans Gerät — geeignet für Thermostate und Heizlüfter mit eigener Regelung. Proportional sendet einen erhöhten Sollwert Richtung Geräte-max_temp — geeignet für Heizkörperventile (TRVs).",
+  "devices.valve_position_entity": "Ventilstellungs-Sensor (optional)",
+  "devices.valve_position_entity_hint": "Sensor, der die Ventilöffnung des Thermostats in % meldet (z. B. von Danfoss Ally). Beim Heizen lernt das Wärmemodell aus der tatsächlichen Öffnung, statt ein voll geöffnetes Ventil anzunehmen — sinnvoll für selbstregelnde Thermostate. Wird nur verwendet, wenn jedes Thermostat im Raum einen hat. Nach dem Hinzufügen empfiehlt sich ein Zurücksetzen des Wärmemodells des Raums.",
   "devices.coil_dry": "Verdampfer-Trocknung",
   "devices.coil_dry_inherit": "Globale Einstellung nutzen",
   "devices.coil_dry_on": "Immer an",
