@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -153,6 +154,21 @@ async def _async_check_version_mismatch(hass: HomeAssistant) -> None:
         ir.async_delete_issue(hass, DOMAIN, "restart_required")
 
 
+def _panel_cache_key(panel_js: Path) -> str:
+    """Return a short digest of the panel bundle for its URL query.
+
+    Browsers cache the panel module aggressively: without a URL that changes
+    with the file, an updated bundle keeps rendering the previous UI until the
+    user clears site data.  Hashing the file also covers development builds,
+    where the version in the manifest stays put between rebuilds.
+    """
+    try:
+        return hashlib.md5(panel_js.read_bytes(), usedforsecurity=False).hexdigest()[:8]
+    except OSError:
+        _LOGGER.debug("Could not hash the RoomMind panel bundle, falling back to the version")
+        return VERSION
+
+
 async def _async_register_panel(hass: HomeAssistant) -> None:
     """Register the RoomMind custom panel in the sidebar."""
     if hass.data[DOMAIN].get("panel_registered"):
@@ -173,6 +189,8 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
     except RuntimeError:
         _LOGGER.debug("RoomMind static path already registered")
 
+    cache_key = await hass.async_add_executor_job(_panel_cache_key, panel_js)
+
     try:
         async_register_built_in_panel(
             hass,
@@ -185,7 +203,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
                     "name": "roommind-panel",
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": "/roommind/roommind-panel.js",
+                    "js_url": f"/roommind/roommind-panel.js?v={cache_key}",
                 }
             },
         )
