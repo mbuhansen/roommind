@@ -12,6 +12,7 @@ from custom_components.roommind.control.mpc_controller import (
     MODE_COOLING,
     MODE_HEATING,
     MODE_IDLE,
+    PREHEAT_MAX_MINUTES,
     MPCController,
 )
 from custom_components.roommind.control.mpc_optimizer import MPCPlan
@@ -923,11 +924,12 @@ def test_direct_setpoint_target_preheat_uses_upcoming_comfort(monkeypatch):
     assert ctrl.direct_setpoint_target(MODE_IDLE, 20.5) == 20.5
 
 
-def test_direct_setpoint_target_ignores_comfort_beyond_decision_window(monkeypatch):
-    """A target change outside the optimizer/guard window does not raise the setpoint."""
+def test_direct_setpoint_target_ignores_comfort_beyond_preheat_window(monkeypatch):
+    """A target change further out than adaptive pre-heat looks does not raise the setpoint."""
     eco = TargetTemps(heat=18.0, cool=27.0)
     comfort = TargetTemps(heat=22.5, cool=24.0)
-    ctrl = _preheat_ctrl(monkeypatch, _step_resolver(eco, comfort, 12), MODE_HEATING)
+    beyond_cap = int(PREHEAT_MAX_MINUTES / 5) + 6
+    ctrl = _preheat_ctrl(monkeypatch, _step_resolver(eco, comfort, beyond_cap), MODE_HEATING)
 
     mode, _ = ctrl._evaluate_mpc(17.0, eco)
 
@@ -936,10 +938,9 @@ def test_direct_setpoint_target_ignores_comfort_beyond_decision_window(monkeypat
 
 
 def test_direct_setpoint_target_not_raised_when_not_heating(monkeypatch):
-    """No pre-heat target when the optimizer stays idle."""
+    """No pre-heat target when the optimizer stays idle and no step-up is coming."""
     eco = TargetTemps(heat=20.5, cool=27.0)
-    comfort = TargetTemps(heat=22.5, cool=24.0)
-    ctrl = _preheat_ctrl(monkeypatch, _step_resolver(eco, comfort, 3), MODE_IDLE)
+    ctrl = _preheat_ctrl(monkeypatch, lambda ts: eco, MODE_IDLE)
 
     ctrl._evaluate_mpc(22.0, eco)
 
